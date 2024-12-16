@@ -1,0 +1,486 @@
+---
+title: "ST661 Project - Group E"
+author: "Sumayya Ali, Santhosh Muthukrishnan, Sam Edwin Sampath, Naga Venkata Pawan Yeluri"
+date: "2024-12-13"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Project: Group E {.tabset}
+
+
+An Analysis on All-Rounder Olympic Swimmers
+
+
+
+### Introduction
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(plotly)
+library(reshape2)
+```
+
+Swimming is one of the most popular and competitive sports in the world, comprising a diverse range of strokes. The olympics include the 4 major strokes - **freestyle, backstroke, breaststroke, and butterfly**. Each stroke requires unique techniques, strengths, and strategies, making it interesting to explore the performance dynamics of swimmers who specialize in different strokes compared to those who focus on a single stroke.
+
+In competitive swimming, flexibility can give athletes an advantage by improving their adaptability, strength, and endurance. However, specializing in one type can provide advantages such as mastering specific techniques.
+
+This study examines the question: _“Do swimmers who compete in different types of swimming earn mode medals?”_
+
+To address this question, we analyze the given Paris Olympics 2024 Swimming Dataset from kaggle which contains information about swimmers, their participation in different swimming events, and their performance measures. By examining these data, we aim to uncover patterns and relationships that may shed light on the role that flexibility plays in swimming success.
+
+
+The dataset is sourced from [kaggle](https://www.kaggle.com/datasets/piterfm/paris-2024-olympic-summer-games) takes the form shown below:
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+dataset=read_csv("results/Swimming.csv")
+head(dataset)
+```
+
+
+In the following tabs, we describe the data adjustments made to prepare the dataset for analysis, present visualizations to support our findings.
+
+
+### Data manipulation
+The chosen dataset (Paris Olympics 2024 Swimming Results) is robust, but contains a large number of columns with redundant or missing values. This requires cleaning and refining.
+
+For this project, the key columns that are relevant to our analysis are:
+ `participant_name`, 
+ `participant_code`, 
+ `event_code`, 
+ `rank`.
+
+We make several modifications to the dataset to fit the needs of our research question.
+
+<br>
+<br>
+  
+#### Data Wrangling
+The given dataframe is manipulated to capture the number of unique swimming types participated in by each swimmer. This facilitates a more focused analysis of multi-style participation.
+
+##### Filtering:
+* Rows with missing values in the `rank` column are removed, as these do not contribute to the analysis.
+* Rows where the `participant_type` is "Team" are excluded, as team-based events are not relevant to our hypothesis. We focus on individual swimmers.
+* Rows where the `event_type` is a medley event are removed, as medley events involve all four swimming styles and could dilute the specificity of the analysis.
+* Columns with redundant data are excluded Several columns in the dataset (for example `discipline` and `event_code`) contain the same value through all rows in the dataset
+* Columns with data not in focus of this project are excluded (`gender`, `venue`, `date`, etc.)
+
+```{r}
+filtered = dataset |>
+  filter(!is.na(rank)) |> #No missing ranks
+  filter(participant_type != "Team") |> #No Teams
+  filter(!grepl("medley", event_name, ignore.case = TRUE))  #No medley events
+
+
+participation_data = dataset |>
+  group_by(participant_code) |>
+  summarise(n.events = length(unique(event_name))) |>
+  arrange(desc(n.events))
+```
+
+
+##### Data Transformation
+A number of derived columns are created for aiding in the analysis as follows:
+
+* `swimming_type`: Extracted from the `event_name` column to identify the specific swimming stroke for each event
+* `medal_type`: Derived from the `rank` column to categorize the performance into medal tiers (e.g., Gold, Silver, Bronze).
+* `event_weightage`: Represents the importance of the result based on the `event_stage` column. Each stage is assigned a weightage based on whether the result is from a Heat event, Semifinals, or Finals. This will be useful to visualise data by scaling up more important results
+* `standardised_performance`: A normalized column with values ranging from 0 to 1, calculated from the `rank` column. A value of 1 indicates the best performance, and 0 indicates the worst.
+* `n.types`: A new column capturing the number of unique swimming strokes a swimmer has participated in. In this dataset this value is between 1 and 4.
+
+
+```{r}
+# Include swimming_type based on event_name
+mutated = filtered |>
+  mutate(swimming_type = 
+                               ifelse(
+                                 grepl("freestyle", event_name, ignore.case = TRUE), "freestyle",
+                               ifelse(
+                                 grepl("breaststroke", event_name, ignore.case = TRUE), "breaststroke",
+                               ifelse(
+                                 grepl("butterfly", event_name, ignore.case = TRUE), "butterfly",
+                               ifelse(
+                                 grepl("backstroke", event_name, ignore.case = TRUE), "backstroke",
+                                 NA
+                               ))))) |>
+  #include medal_type based on rank
+  mutate( medal_type = ifelse(rank == 1, "gold",
+                                              ifelse(rank == 2, "silver",
+                                                ifelse(rank == 3, "bronze",
+                                                  NA
+                                            )))) |>
+  #include event_weightate based in event_stage
+  mutate(event_weightage = ifelse(grepl("heat", stage, ignore.case = TRUE), 1,
+                                              ifelse(grepl("semifinal", stage, ignore.case = TRUE), 2,
+                                              ifelse(grepl("final", stage, ignore.case = TRUE), 3,
+                                                  NA
+                                            )))) |>
+  #exclude unused columns
+  select(participant_name, event_name, rank, swimming_type, event_weightage, stage, gender, participant_code, medal_type)
+
+
+#include column for Performance score:
+mutated = mutated |>
+  group_by(event_name) |>
+  mutate(
+    max_rank = max(rank, na.rm = TRUE),
+    standardized_performance = 1 - (rank - 1) / (max_rank - 1),
+    weighted_performance = standardized_performance * event_weightage
+  ) |>
+  ungroup() 
+
+#Include column for number of unique event types
+mutated = mutated |>
+  group_by(participant_code) |>
+  mutate(
+    n.types = length(unique(event_name))
+  ) |>
+  ungroup()
+
+
+mutated$n.types = factor(mutated$n.types)
+```
+
+With these adjustments and transformations in place, the dataset becomes well-structured and aligned with the requirements of our analysis. These steps ensure that the data is ready for exploring the relationship between participation in multiple swimming types and performance outcomes
+
+
+### Analysis {.tabset}
+
+
+
+#### Performance vs Number of events
+```{r, fig.align='center', fig.cap='Figure 1: Performance vs Versatility'}
+bp = ggplot(mutated, mapping = aes(
+  y=standardized_performance,
+  #y=weighted_performance,
+  fill = n.types, x = n.types)) +
+  labs(
+      title = "Performance based on number of unique swimming types participated in",
+      x = "Number of unique swimming types participated in",
+      y = "Standardised performance",
+      fill = "No. of events"
+    ) +
+  geom_boxplot()
+bp
+```
+
+The above plot visualizes the relationship between the number of unique swimming types a swimmer participates in and their standardized performance scores.
+
+The *x-axis* represents the number of unique swimming types participated in (ranging from 1 to 4).
+The *y-axis* shows the standardized performance, a normalized metric where higher values indicate better performance.
+
+<br>
+
+##### Observations:
+**Swimmers specializing in one swimming type** (red boxplot):
+These swimmers exhibit a wide range of performance, with a lower median performance. The IQR suggests that majority of the highest performances are also low.
+
+**Swimmers participating in two swimming types** (green boxplot):
+The median standardized performance improves for swimmers who compete in two types, suggesting higher performance with the same variability, suggesting a clear improvement.
+
+**Swimmers participating in three swimming types** (blue boxplot):
+These swimmers have the highest median standardized performance, indicating that participating in multiple styles may correlate with better outcomes. The narrower IQR suggests that performance is more consistent.
+
+**Swimmers participating in all four swimming types** (purple boxplot):
+The performance of these swimmers shows a slight decline compared to those participating in three styles. The decline could indicate *diminishing returns* when swimmers spread their focus across too many styles. However it is also worth knowing that they have the highest minimum scores.
+
+##### Interpretation:
+The graph suggests that swimmers participating in multiple swimming styles generally achieve higher performance scores, peaking at three swimming types. However, those attempting all four styles show slightly reduced performance, possibly due to the challenges of mastering multiple techniques. These findings emphasize the importance of versatility in competitive swimming but also suggest an optimal balance in specialization and breadth for peak performance.
+
+
+
+#### Performance in different styles
+
+```{r warning=FALSE}
+# Select the best performer for each swimming type
+best_performers <- mutated |> 
+  group_by(swimming_type) |> 
+  filter(rank == min(rank, na.rm = TRUE)) |> 
+  # Add a filter to filter out finals participant
+  ungroup() |> 
+  select(participant_code, participant_name, swimming_type)
+
+# Merge the best performers back with the dataset to compare their performance in other swimming types
+comparison <- mutated |> 
+  inner_join(best_performers, by = "participant_code", suffix = c("", "_best")) |> 
+  filter(swimming_type != swimming_type_best) # Exclude the swimming type where they are the best
+
+# Summarize performance of the best performers in other swimming types
+comparison_summary <- comparison |> 
+  group_by(participant_name_best, swimming_type_best, swimming_type) |> 
+  summarise(
+    avg_rank = mean(rank, na.rm = TRUE),
+    avg_standardized_performance = mean(standardized_performance, na.rm = TRUE),
+    avg_weighted_performance = mean(weighted_performance, na.rm = TRUE),
+    .groups = "drop"
+  ) |> 
+  arrange(participant_name_best, swimming_type_best, swimming_type)
+
+```
+
+
+```{r warning=FALSE, fig.align='center', fig.cap='Figure 2: Top performers in other events'}
+# Create a custom labeller function for facet titles
+custom_labeller <- function(swimming_type_best) {
+  paste("Top", swimming_type_best, "Performers")
+}
+
+# General plotting with consistent y-axis scale across facets
+top_perf = ggplot(comparison_summary, aes(x = swimming_type, y = avg_standardized_performance, fill = swimming_type_best)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ swimming_type_best, labeller = labeller(swimming_type_best = custom_labeller)) +
+  scale_y_continuous(limits = c(0, 1)) +  # Set y-axis scale from 0 to 1 for all facets
+  labs(
+    title = "Performance of Best Performers Across Other Swimming Types",
+    x = "Swimming Type",  # Keep this generic; focus on facet titles
+    y = "Average Performance Score",
+    fill = "Best Swimming Type"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
+  )
+#ggplotly(top_perf) #ggplotly makes the legend overlap.
+top_perf
+```
+
+##### Observation:
+
+1. Top Backstroke Performers:
+Perform well not only in backstroke but also in freestyle and butterfly. This suggests that backstroke athletes tend to have versatile skills transferable to other styles. Their performance in freestyle and butterfly is comparable, indicating a balanced skill set across these types.
+
+2. Top Breaststroke Performers:
+Exhibit a high level of proficiency in butterfly compared to other styles. However, their participation or performance in backstroke or freestyle is absent in this dataset.
+
+3. Top Butterfly Performers:
+Maintain consistently high performance across backstroke, breaststroke, and freestyle, showing their adaptability. Their performance in backstroke and freestyle is nearly equal, highlighting strong crossover potential.
+
+4. Top Freestyle Performers:
+Perform moderately well in butterfly and backstroke but show a notable decline compared to their performance in freestyle. This indicates that freestyle specialists may not excel as much in other swimming types.
+
+##### Interpretation:
+The versatility of swimmers varies by swimming type. Butterfly and backstroke performers tend to be more adaptable across multiple swimming styles, while freestyle and breaststroke performers exhibit more specialized skills. The top butterfly stroke performers show consistently high performance across all swimming types. 
+The data could inform training regimens, emphasizing cross-training for swimmers in certain styles (e.g., freestyle) to improve adaptability in other swimming types.
+Versatility trends decrease from butterfly >  backstroke > freestyle > breaststroke.
+
+
+#### Multidisciplinary swimmers' performance across stages
+```{r, fig.align='center', fig.cap='Figure 3: Performance across stages'}
+# Convert n.types to numeric if it is not already
+mutated$n.types <- as.numeric(as.character(mutated$n.types))
+
+# Filter for multidisciplinary swimmers
+multidisciplinary_swimmers <- mutated %>%
+  filter(n.types > 1)
+
+# Summarize performance for multidisciplinary swimmers
+multidisciplinary_performance <- multidisciplinary_swimmers %>%
+  summarise(
+    avg_standardized_performance = mean(standardized_performance, na.rm = TRUE),
+    avg_weighted_performance = mean(weighted_performance, na.rm = TRUE),
+    avg_medal_count = mean(ifelse(is.na(medal_type), 0, 1), na.rm = TRUE),
+    total_events = n()
+  )
+
+# Display the summary
+print(multidisciplinary_performance)
+
+# Ensure the stage column is correctly created (if it's not already there)
+if (!"stage" %in% colnames(mutated)) {
+  # Example of how the stage column might be derived
+  mutated <- mutated %>%
+    mutate(stage = ifelse(grepl("final", event_name, ignore.case = TRUE), "Final",
+                   ifelse(grepl("semifinal", event_name, ignore.case = TRUE), "Semifinal",
+                   ifelse(grepl("heat", event_name, ignore.case = TRUE), "Heat",
+                   NA))))
+}
+
+# Convert n.types to numeric if it is not already
+mutated$n.types <- as.numeric(as.character(mutated$n.types))
+
+# Create the multidisciplinary column
+mutated <- mutated %>%
+  mutate(multidisciplinary = ifelse(n.types > 1, "Yes", "No"))
+
+# Filter for multidisciplinary swimmers
+multidisciplinary_swimmers <- mutated %>%
+  filter(n.types > 1)
+
+# Create a summary dataframe for heatmap
+heatmap_data <- multidisciplinary_swimmers %>%
+  group_by(swimming_type, stage) %>%
+  summarise(avg_weighted_performance = mean(weighted_performance, na.rm = TRUE), .groups = "drop") %>%
+  ungroup()
+
+# Reshape data for heatmap
+heatmap_matrix <- dcast(heatmap_data, swimming_type ~ stage, value.var = "avg_weighted_performance")
+
+# Plot heatmap with ordered stages
+heatmap_matrix_melted <- melt(heatmap_matrix, id.vars = "swimming_type")
+heatmap_matrix_melted$variable <- factor(heatmap_matrix_melted$variable, levels = c("Heat 1", "Heat 2", "Heat 3", "Heat 4", "Heat 5", "Heat 6", "Heat 7", "Heat 8", "Heat 9", "Heat 10", "Semifinal 1", "Semifinal 2", "Final"))
+
+ggplot(heatmap_matrix_melted, aes(x = variable, y = swimming_type, fill = value)) +
+  geom_tile() +
+  labs(
+    title = "Heatmap of Average Weighted Performance",
+    x = "Event Stage",
+    y = "Swimming Type",
+    fill = "Performance"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
+  )
+```
+
+
+##### Performance by Swimming Type:
+
+*Freestyle*: Shows varied performance across different heats, with generally higher performance in later stages (Semifinals and Final).
+
+*Butterfly*: Performance varies with some heats showing higher performance, indicating inconsistent outcomes across stages.
+
+*Breaststroke*: Also shows inconsistency across heats, with some stages performing better than others.
+
+*Backstroke*: Similar to other strokes, there is variability in performance, with later stages showing a slight improvement.
+
+##### Performance by Event Stage:
+
+Heat Stages (1-10): There is noticeable variability in performance, with some heats showing darker shades (lower performance) and others lighter shades (higher performance).
+
+Semifinals: Generally show better performance (lighter shades) compared to heats, indicating a trend of improvement as the competition progresses.
+
+Final: Shows the highest performance across all strokes, suggesting a peak in performance during the most critical stage.
+
+
+##### Freestyle Performance Trends:
+
+1) Early heats (Heat 1-3) show moderate performance with darker shades.
+2) Performance improves in later heats (Heat 8-10) and is highest in the Final stage.
+
+##### Butterfly Inconsistency:
+
+1) Performance varies widely, with some heats showing low performance and others showing high performance.
+2) Notable improvement in the Semifinal and Final stages.
+
+##### Breaststroke Variability:
+
+1) Similar to Butterfly, there is a mix of low and high performance across heats.
+2) Semifinal and Final stages generally show improved performance.
+
+##### Backstroke Trends:
+
+1) Initial heats show moderate to low performance.
+2) Improvement is seen in later heats and peak performance in the Final stage.
+
+
+#### Medals vs Number of event types
+
+```{r, fig.align='center', fig.cap='Figure 4: Medals earned'}
+medal_analysis_individual <- dataset %>%
+  filter(!is.na(rank)) %>%
+  filter(participant_type != "Team") %>%
+  mutate(
+    medal_type = case_when(
+      rank == 1 ~ "Gold",
+      rank == 2 ~ "Silver", 
+      rank == 3 ~ "Bronze"
+    )
+  ) %>%
+  filter(!is.na(medal_type)) %>%
+  group_by(participant_name, participant_country) %>%
+  summarise(
+    gold_medals = sum(medal_type == "Gold"),
+    silver_medals = sum(medal_type == "Silver"),
+    bronze_medals = sum(medal_type == "Bronze"),
+    n_events = n_distinct(event_name),  # Number of event types participated in
+    .groups = 'drop'  # Drop the grouping after summarising
+  )
+
+plot_ly(medal_analysis_individual, x = ~gold_medals, y = ~silver_medals, z = ~bronze_medals, 
+        type = 'scatter3d', mode = 'markers',
+        marker = list(size = 5, 
+                      color = ~n_events,  # Map the number of events to color
+                      colorscale = 'Viridis',  # Choose a colorscale (can be changed)
+                      colorbar = list(title = "No. of Events"),  # Add a color legend
+                      opacity = 0.7),  # Optionally adjust opacity for better visibility
+        text = ~paste("Player: ", participant_name,
+                      "<br>Country: ", participant_country,
+                      "<br>Gold Medals: ", gold_medals,
+                      "<br>Silver Medals: ", silver_medals,
+                      "<br>Bronze Medals: ", bronze_medals,
+                      "<br>Event Types: ", n_events),
+        hoverinfo = 'text') %>%
+  layout(
+    title = "3D Plot of Olympic Swimming Medals by Swimmer",
+    scene = list(
+      xaxis = list(title = 'Gold Medals'),
+      yaxis = list(title = 'Silver Medals'),
+      zaxis = list(title = 'Bronze Medals')
+    )
+  )
+
+```
+
+
+The 3D scatter plot visualizes the relationship between the number of medals won by swimmers (Gold, Silver, and Bronze) and the number of different events they participated in.
+
+##### Key Observations:
+Axes and Medal Counts:
+X-axis: Represents the number of Gold Medals won by swimmers.
+Y-axis: Represents the number of Silver Medals won.
+Z-axis: Represents the number of Bronze Medals won.
+
+The points are color-coded based on the number of distinct events each swimmer participated in, with a color scale from yellow (for fewer events) to purple (for more events). This color scale provides a visual cue to help differentiate swimmers based on their level of participation in different events.
+
+A higher number of wins for a player is marked by the distance from the center.
+
+##### Insights:
+Cluster of swimmers with more medals: Swimmers who have a higher count of medals (particularly Gold and Silver) tend to be clustered towards the upper-right side of the plot, where they also often participated in more events.
+Swimmers with fewer medals: Swimmers with fewer medals, especially those with only Gold or Silver, are found towards the lower-left of the plot, indicating a lower level of participation in events.
+Event Participation: A clear trend is visible where swimmers who participate in more events (represented by darker shades of purple) generally win more medals, suggesting that there could be a positive correlation between event participation and medal count.
+
+##### Observation:
+This interactive 3D plot provides valuable insights into the relationship between event participation and medal achievements for individual swimmers in Olympic swimming competitions. Swimmers who compete in more events tend to accumulate a greater number of medals, both in terms of quantity and variety (Gold, Silver, and Bronze). The color legend adds an additional layer of analysis, helping viewers quickly understand the extent of participation for each swimmer.
+
+
+### Conclusions
+
+By analyzing standardized performance metrics and participation across swimming types, the following conclusions were drawn:
+
+**Performance Across Swimming Types:**  
+From the first graph, we observe how top performers in each swimming type (backstroke, breaststroke, butterfly, and freestyle) fared across other types. The performance increased gradually, capping at 3 different swimming strokes.  
+
+**Backstroke and Butterfly Performers:**  
+These swimmers demonstrated significant versatility, excelling in multiple swimming types. This indicates that their skills may be more transferable, contributing to consistent performance across different styles.
+
+**Freestyle and Breaststroke Performers:**  
+These swimmers showed a more specialized skill set, with their performance being highly concentrated in their primary swimming type and a notable decline in others.
+
+**Medals won:**
+The fourth (3D) plot showed that most medals are earned by swimmers who have participated in 2 or 3 different swimming strokes. The most number of medals is won by swimmers who have participated in all 4.
+
+**Performance across stages:**
+The heatmap shows that performance increases progressively from heats to the final stage across all swimming types, with darker shades indicating lower scores. Breaststroke, butterfly, and backstroke have missing performance data in later heats, while butterfly shows strong performance in semifinals and finals, highlighting consistent competitiveness.
+
+
+##### Summary:
+The findings indicate that swimmers who engage in multiple swimming types generally perform better, particularly those participating in 2-3 types. However, over-diversification or extreme specialization may not yield the best results. This highlights the importance of strategic training and event selection for competitive swimmers.
+Coaches and trainers could use this insight to encourage swimmers to cross-train in 2-3 swimming types to maximize adaptability while maintaining focused expertise.
+
+These conclusions align with the hypothesis and provide actionable insights into how participation strategies influence performance outcomes in swimming.
+
+##### Authors' contributions:
+1. I, Santhosh Muthukrishnan was responsible for content in "Introduction", "Data wrangling", and the analysis on "Performance vs Number of events"
+2. I, Sumayya Ali am responsible for the content in "Conclusions", and analysis on "Performance in different styles"
+3. I, Sam Edwin Sampath am responsible for the content in analysis for "Medals against event types"
+4. I, Naga Venkata Pawan Yeluri am responsible for the content in analysis for "Multidisciplinary swimmers' performance across stages"
